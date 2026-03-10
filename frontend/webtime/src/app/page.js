@@ -10,7 +10,7 @@ export default function Home() {
     setLoading(true);
 
     try {
-      const res = await fetch(`/api/timeline?domain=${domain}`);
+      const res = await fetch(`http://localhost:8000/timeline?domain=${domain}`);
       const data = await res.json();
 
       setTimeline(data.years || {});
