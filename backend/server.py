@@ -1,10 +1,14 @@
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import requests
 from cachetools import TTLCache
+import httpx
+from fastapi.responses import JSONResponse
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
-#allow frontend to access backend
+
+# Allow frontend access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -12,55 +16,97 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-#cache results for 1 hours
-cache = TTLCache(maxsize=200, ttl=3600)
+# cache results for 1 hour
+cache = TTLCache(maxsize=300, ttl=3600)
+
 WAYBACK_API = "https://web.archive.org/cdx/search/cdx"
 
-def fetch_wayback(domain: str):
 
-    # try domain and www.domain
-    possible_domains = [domain, f"www.{domain}"]
+async def fetch_wayback(domain: str):
 
-    for d in possible_domains:
+    domain = domain.replace("https://", "").replace("http://", "").replace("www.", "")
+    query_domains = [f"*.{domain}", domain]  # try wildcard first, then plain domain
+    years = set()
 
-        params = {
-            "url": d,
-            "output": "json",
-            "fl": "timestamp,statuscode",
-            "filter": "statuscode:200",
-            "collapse": "timestamp:8",
-            "matchType": "domain"
-        }
+    async with httpx.AsyncClient(timeout=30) as client:
 
-        try:
-            r = requests.get(WAYBACK_API, params=params, timeout=20)
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:
-            continue
+        for query_domain in query_domains:
+            resume_key = None
 
-        if len(data) > 1:
-            years = set()
-            for row in data[1:]:
-                timestamp = row[0]
-                years.add(timestamp[:4])
-            return sorted(list(years))
+            while True:
+                params = {
+                    "url": query_domain,
+                    "output": "json",
+                    "fl": "timestamp",
+                    "filter": "statuscode:200",
+                    "limit": 5000,
+                    "showResumeKey": "true"
+                }
 
-    # fallback empty
-    return []
+                if resume_key:
+                    params["resumeKey"] = resume_key
 
+                try:
+                    r = await client.get(WAYBACK_API, params=params)
+                    r.raise_for_status()
+                    data = r.json()
+                except Exception as e:
+                    logging.warning("Wayback fetch failed for %s : %s", domain, e)
+                    break
+
+                if not data or len(data) <= 1:
+                    break
+
+                for row in data[1:]:
+                    if not isinstance(row, list) or len(row) == 0:
+                        continue
+
+                    timestamp = row[0]
+
+                    if not timestamp.isdigit() or len(timestamp) < 4:
+                        continue
+
+                    years.add(timestamp[:4])
+
+                # get resume key if present (safe check)
+                last_item = data[-1]
+                if isinstance(last_item, str) and len(last_item) > 0 and not last_item.isdigit():
+                    resume_key = last_item
+                else:
+                    break
+
+                if len(years) > 50:
+                    break
+
+            if years:
+                break  # stop if we already got results
+
+    return sorted(years)
+
+
+#the main links of the backend 
 @app.get("/timeline")
-def get_timeline(domain:str):
+async def get_timeline(domain: str):
+
+    logging.info("GET /timeline?domain=%s", domain)
+
     if domain in cache:
+        logging.info("cache hit for %s", domain)
         return {
-            "domain":domain,
-            "years":cache[domain],
-            "cached":True
+            "domain": domain,
+            "years": cache[domain],
+            "cached": True
         }
-    years = fetch_wayback(domain)
-    cache[domain]=years
-    return {
-        "domain":domain,
-        "years":years,
-        "cached":False
-    }
+
+    years = await fetch_wayback(domain)
+
+    if years is None:
+        years = []
+
+    cache[domain] = years
+    logging.info("returning %d years for %s", len(years), domain)
+    return {"domain": domain,"years": years,"cached": False}
+
+@app.get("/health")
+def health_check():
+    return JSONResponse(content={"status":"online"},status_code=200)
