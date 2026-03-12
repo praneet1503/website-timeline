@@ -1,14 +1,36 @@
 import logging
-from fastapi import FastAPI,Query
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from cachetools import TTLCache
-import httpx
 from fastapi.responses import JSONResponse
+from wayback import fetch_timeline, fetch_snapshots, fetch_activity, fetch_closest, clean_domain
+from cache import (
+    ensure_cache_files,
+    get_timeline_cache,
+    get_snapshot_cache,
+    save_snapshot_cache,
+    save_timeline_cache,
+)
+from models import (
+    TimelineResponse,
+    SnapshotResponse,
+    HealthResponse,
+    ActivityResponse,
+    ClosestResponse,
+)
+
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI()
+app = FastAPI(
+    title="Website Timeline API",
+    description="Explore historical versions of any website via the Wayback Machine.",
+    version="2.0.0",
+)
 
-# Allow frontend access
+try:
+    ensure_cache_files()
+except Exception as e:
+    logging.warning("Cache initialization failed (non-fatal): %s", e)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,143 +38,150 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# cache results for 1 hour
 cache = TTLCache(maxsize=300, ttl=3600)
-snapshot_cache = TTLCache(maxsize=1000,ttl=3600)
-WAYBACK_API = "https://web.archive.org/cdx/search/cdx"
-client = httpx.AsyncClient(timeout=20)
-
-async def fetch_wayback(domain: str):
-
-    domain = domain.replace("https://", "").replace("http://", "").replace("www.", "")
-    query_domains = [f"*.{domain}", domain]  # try wildcard first, then plain domain
-    years = set()
-
-    async with client as client_session:
-
-        for query_domain in query_domains:
-            resume_key = None
-
-            while True:
-                params = {
-                    "url": query_domain,
-                    "output": "json",
-                    "fl": "timestamp",
-                    "filter": "statuscode:200",
-                    "collapse" : "timestamp:4",
-                    "limit": 2000,
-                    "showResumeKey": "true"
-                }
-
-                if resume_key:
-                    params["resumeKey"] = resume_key
-
-                try:
-                    r = await client_session.get(WAYBACK_API, params=params)
-                    r.raise_for_status()
-                    data = r.json()
-                except Exception as e:
-                    logging.warning("Wayback fetch failed for %s : %s", domain, e)
-                    break
-
-                if not data or len(data) <= 1:
-                    break
-
-                for row in data[1:]:
-                    if not isinstance(row, list) or len(row) == 0:
-                        continue
-
-                    timestamp = row[0]
-
-                    if not timestamp.isdigit() or len(timestamp) < 4:
-                        continue
-
-                    years.add(timestamp[:4])
-
-                # get resume key if present (safe check)
-                last_item = data[-1]
-                if isinstance(last_item, str) and len(last_item) > 0 and not last_item.isdigit():
-                    resume_key = last_item
-                else:
-                    break
-
-                if len(years) > 50:
-                    break
-
-            if years:
-                break  # stop if we already got results
-
-    return sorted(years)
-
-
-#the main links of the backend 
-@app.get("/timeline")
+snapshot_cache = TTLCache(maxsize=1000, ttl=3600)
+activity_cache = TTLCache(maxsize=300, ttl=3600)
+@app.get("/timeline", response_model=TimelineResponse)
 async def get_timeline(domain: str):
-
     logging.info("GET /timeline?domain=%s", domain)
 
-    if domain in cache:
-        logging.info("cache hit for %s", domain)
-        return {
-            "domain": domain,
-            "years": cache[domain],
-            "cached": True
-        }
+    cleaned = clean_domain(domain)
 
-    years = await fetch_wayback(domain)
+    if cleaned in cache:
+        logging.info("Memory cache hit for %s", cleaned)
+        return {"domain": cleaned, "years": cache[cleaned], "cached": True}
+
+    csv_cache = get_timeline_cache(cleaned)
+    if csv_cache:
+        logging.info("Disk cache hit for %s", cleaned)
+        cache[cleaned] = csv_cache
+        return {"domain": cleaned, "years": csv_cache, "cached": True}
+
+    fetch_failed = False
+    try:
+        years = await fetch_timeline(cleaned)
+    except Exception as e:
+        logging.error("fetch_timeline failed for %s: %s", cleaned, e)
+        years = []
+        fetch_failed = True
 
     if years is None:
         years = []
 
-    cache[domain] = years
-    logging.info("returning %d years for %s", len(years), domain)
-    return {"domain": domain,"years": years,"cached": False}
+    if not fetch_failed:
+        save_timeline_cache(cleaned, years)
+        cache[cleaned] = years
+    else:
+        logging.warning("Skipping timeline cache write for %s due to upstream failure", cleaned)
 
-@app.get("/health")
-def health_check():
-    return JSONResponse(content={"status":"online"},status_code=200)
-        
-@app.get("/snapshots")
+    logging.info("Returning %d years for %s", len(years), cleaned)
+    return {"domain": cleaned, "years": years, "cached": False}
+
+@app.get("/snapshots", response_model=SnapshotResponse)
 async def get_snapshots(domain: str, year: str):
-    # Clean the domain
-    clean_domain = domain.replace("https://", "").replace("http://", "").replace("www.", "")
-    
-    # Try exact domain, then www. Exact match is 100x FASTER than using a wildcard (*.)
-    query_domains = [clean_domain, f"www.{clean_domain}"]
-    url = "https://web.archive.org/cdx/search/cdx"
+    logging.info("GET /snapshots?domain=%s&year=%s", domain, year)
 
-    async with client as client_session:
-        for q_domain in query_domains:
-            params = {
-                "url": q_domain,
-                "from": year,
-                "to": year,
-                "output": "json",
-                "fl": "timestamp",
-                "filter": "statuscode:200",
-                "collapse": "timestamp:8",
-                "limit": 50
-            }
-            try:
-                response = await client_session.get(url, params=params)
-                response.raise_for_status()
-                data = response.json()
+    cleaned = clean_domain(domain)
+    cache_key = f"{cleaned}_{year}"
 
-                # If valid data found (more than just the header), process and return immediately!
-                if data and len(data) > 1:
-                    snapshots = []
-                    for row in data[1:]:
-                        timestamp = row[0]
-                        formatted_date = f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}"
-                        snapshots.append({
-                            "timestamp": timestamp,
-                            "date": formatted_date
-                        })
-                    return {"snapshots": snapshots}
-            except Exception as e:
-                print(f"Warning fetching snapshots for {q_domain}: {e}")
-                continue # If it fails or times out, try the next domain in the loop
-                
-    # If all attempts fail or return empty
-    return {"snapshots": []}
+    if cache_key in snapshot_cache:
+        logging.info("Memory cache hit for %s", cache_key)
+        return {"snapshots": snapshot_cache[cache_key], "cached": True}
+
+    csv_snapshots = get_snapshot_cache(cleaned, year)
+    if csv_snapshots:
+        logging.info("Disk cache hit for %s", cache_key)
+        snapshot_cache[cache_key] = csv_snapshots
+        return {"snapshots": csv_snapshots, "cached": True}
+
+    fetch_failed = False
+    try:
+        snapshots = await fetch_snapshots(cleaned, year)
+    except Exception as e:
+        logging.error("fetch_snapshots failed for %s/%s: %s", cleaned, year, e)
+        snapshots = []
+        fetch_failed = True
+
+    if snapshots is None:
+        snapshots = []
+
+    if not fetch_failed:
+        save_snapshot_cache(cleaned, year, snapshots)
+        snapshot_cache[cache_key] = snapshots
+    else:
+        logging.warning("Skipping snapshot cache write for %s due to upstream failure", cache_key)
+
+    return {"snapshots": snapshots, "cached": False}
+
+@app.get("/activity", response_model=ActivityResponse)
+async def get_activity(domain: str):
+    logging.info("GET /activity?domain=%s", domain)
+
+    cleaned = clean_domain(domain)
+
+    if cleaned in activity_cache:
+        logging.info("Memory cache hit for activity/%s", cleaned)
+        return {"domain": cleaned, "activity": activity_cache[cleaned], "cached": True}
+
+    fetch_failed = False
+    try:
+        activity = await fetch_activity(cleaned)
+    except Exception as e:
+        logging.error("fetch_activity failed for %s: %s", cleaned, e)
+        activity = {}
+        fetch_failed = True
+
+    if activity is None:
+        activity = {}
+
+    if not fetch_failed:
+        activity_cache[cleaned] = activity
+    else:
+        logging.warning("Skipping activity cache write for %s due to upstream failure", cleaned)
+
+    return {"domain": cleaned, "activity": activity, "cached": False}
+
+@app.get("/closest", response_model=ClosestResponse)
+async def get_closest(domain: str, date: str):
+    logging.info("GET /closest?domain=%s&date=%s", domain, date)
+
+    cleaned = clean_domain(domain)
+
+    if not date.isdigit() or len(date) != 8:
+        logging.warning("Invalid date format: %s", date)
+        return {
+            "domain": cleaned,
+            "found": False,
+            "timestamp": None,
+            "date": None,
+            "url": None,
+        }
+
+    try:
+        result = await fetch_closest(cleaned, date)
+    except Exception as e:
+        logging.error("fetch_closest failed for %s@%s: %s", cleaned, date, e)
+        result = None
+
+    if result is None:
+        return {
+            "domain": cleaned,
+            "found": False,
+            "timestamp": None,
+            "date": None,
+            "url": None,
+        }
+
+    return {
+        "domain": cleaned,
+        "found": True,
+        "timestamp": result["timestamp"],
+        "date": result["date"],
+        "url": result["url"],
+    }
+
+@app.get("/health", response_model=HealthResponse)
+def health_check():
+    return JSONResponse(content={"status": "online"}, status_code=200)
+    return {"snapshots": snapshots}
+

@@ -106,16 +106,13 @@ return () => {mounted=false;clearInterval(id);};
       {loading && <p>Loading timeline(asking aristotle for your websites bro.be patient)</p>}
       {error && <p className="text-red-400">{error}</p>}
 
-
-
-
       <div className="grid grid-cols-4 gap-4 mb-10">
         {timeline.map((year) => (
           <div 
             key={year} 
             onClick={() => fetchSnapshots(year)}
             className={`p-4 rounded cursor-pointer text-center font-bold transition-colors ${
-              selectedYear === year ? 'bg-blue-600' : 'bg-gray-900 hover:bg-gray-800'
+              selectedYear === year ? "bg-blue-600" : "bg-gray-900 hover:bg-gray-800"
             }`}
           >
             {year}
@@ -126,14 +123,20 @@ return () => {mounted=false;clearInterval(id);};
       <div className="flex justify-between items-center mt-8">
         <div>
           <p className="text-white"><strong>Did you Know?</strong></p>
-          <p className="text-gray-50 px-2">the first web page was created by tim berners-lee,the creator of the great world wide web</p>
-          <p className="text-gray-50 px-4">he basically created the html language.</p>
+          <p className="text-gray-50 px-2">
+            the first web page was created by tim berners-lee, the creator of the great world wide web. he basically created the html language.
+          </p>
         </div>
         <div id="backend-status" className="text-white">Backend: {backendStatus}</div>
       </div>
 
-      <footer className="mt-10 text-center text-gray-500 fixed bottom-0 w-full py-20">
-        <p>created with ❤️ by praneet (prentz)</p>
+      <footer className="mt-10 text-center text-gray-500 fixed bottom-0 w-full py-2">
+        <div className="flex justify-center items-center gap-2">
+          <p className="m-0 text-white">Created with ❤️ by praneet (prentz)</p>
+          <a href="https://github.com/praneet1503/website-timeline" className="text-white hover:underline">
+            |   Open Sourced
+          </a>
+        </div>
       </footer>
     </main>
   );
