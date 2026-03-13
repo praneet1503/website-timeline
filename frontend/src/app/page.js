@@ -1,5 +1,4 @@
 "use client";
-import Error from "next/error";
 import { useState, useEffect } from "react";
 const API_BASE=process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 export default function Home() {
@@ -64,8 +63,8 @@ async function fetchSnapshots(year) {
     
   
 }
-const handlePreview = (timestamp) => {
-  setPreviewUrl(`https://web.archive.org/web/${timestamp}/${domain}`);
+const handlePreview = (url) => {
+  setPreviewUrl(url);
 };
 
 
@@ -119,6 +118,59 @@ return () => {mounted=false;clearInterval(id);};
           </div>
         ))}
       </div>
+
+      {!loading && !error && timeline.length === 0 && (
+        <p className="text-gray-400 mb-8">No timeline years found for this domain.</p>
+      )}
+
+      {selectedYear && (
+        <section className="mb-10">
+          <h2 className="text-2xl font-semibold mb-3">Snapshots for {selectedYear}</h2>
+          {loadingSnapshots && <p className="text-gray-300">Loading snapshots...</p>}
+          {snapshotError && <p className="text-red-400">{snapshotError}</p>}
+          {!loadingSnapshots && !snapshotError && snapshots.length === 0 && (
+            <p className="text-gray-400">No snapshots found for this year.</p>
+          )}
+          {!loadingSnapshots && snapshots.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {snapshots.map((snap) => (
+                <div key={snap.timestamp} className="bg-gray-900 rounded p-3 border border-gray-800">
+                  <p className="text-sm text-gray-300">{snap.date}</p>
+                  <p className="text-xs text-gray-500 mb-3">{snap.timestamp}</p>
+                  <div className="flex gap-2">
+                    <a
+                      href={snap.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="bg-blue-600 px-3 py-1 rounded text-sm"
+                    >
+                      Open
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => handlePreview(snap.url)}
+                      className="bg-gray-700 px-3 py-1 rounded text-sm"
+                    >
+                      Preview
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {previewUrl && (
+        <section className="mb-8">
+          <h3 className="text-xl font-semibold mb-2">Preview</h3>
+          <iframe
+            title="Wayback Preview"
+            src={previewUrl}
+            className="w-full h-130 rounded border border-gray-800 bg-white"
+          />
+        </section>
+      )}
       
       <div className="flex justify-between items-center mt-8">
         <div>

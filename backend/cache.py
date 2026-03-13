@@ -1,121 +1,139 @@
 import csv
 import logging
 from pathlib import Path
+from typing import List
 
-cache_dir = Path("/cache")
-timeline_file = cache_dir / "timeline_cache.csv"
-snapshot_file = cache_dir / "snapshot_cache.csv"
+from cachetools import TTLCache
+
+CACHE_DIR = Path(__file__).parent / "cache"
+TIMELINE_FILE = CACHE_DIR / "timeline_cache.csv"
+SNAPSHOT_FILE = CACHE_DIR / "snapshot_cache.csv"
+
+timeline_mem = TTLCache(maxsize=500, ttl=3600)
+snapshot_mem = TTLCache(maxsize=500, ttl=3600)
+
 
 def ensure_cache_files():
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        logging.warning("Could not create cache directory %s: %s", cache_dir, e)
-        return
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if not TIMELINE_FILE.exists() or TIMELINE_FILE.stat().st_size == 0:
+        with open(TIMELINE_FILE, "w", newline="") as f:
+            csv.writer(f).writerow(["domain", "years"])
 
-    if not timeline_file.exists():
-        try:
-            with open(timeline_file, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(["domain", "years"])
-        except OSError as e:
-            logging.warning("Could not create timeline cache file: %s", e)
+    if not SNAPSHOT_FILE.exists() or SNAPSHOT_FILE.stat().st_size ==0:
+        with open(SNAPSHOT_FILE,"w",newline="") as f:
+            csv.writer(f).writerow(["domain","year","timestamp"])
 
-    if not snapshot_file.exists():
-        try:
-            with open(snapshot_file, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(["domain", "year", "timestamp"])
-        except OSError as e:
-            logging.warning("Could not create snapshot cache file: %s", e)
 
-def get_timeline_cache(domain: str):
-    if not timeline_file.exists():
+# ---------------------------------------------------------------------------
+#  Timeline cache
+# ---------------------------------------------------------------------------
+
+def get_timeline_from_memory(domain: str) -> List[str] | None:
+    return timeline_mem.get(domain)
+
+
+def get_timeline_from_disk(domain: str) -> List[str] | None:
+    if not TIMELINE_FILE.exists():
         return None
     try:
-        with open(timeline_file, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row.get("domain") == domain:
+        from wayback import clean_domain
+        search_target = clean_domain(domain) # turn "www.youtube.com" -> "youtube.com"
+
+        with open(TIMELINE_FILE, "r") as f:
+            for row in csv.DictReader(f):
+                # Clean the domain in the CSV row too
+                cached_domain = clean_domain(row.get("domain", ""))
+                if cached_domain == search_target:
                     years_str = row.get("years", "")
-                    if years_str:
-                        return years_str.split("|")
-                    return []
-    except Exception as e:
-        logging.warning("Failed to read timeline cache for %s: %s", domain, e)
+                    years = [y.strip() for y in years_str.split("|") if y.strip()] if years_str else []
+                    if years:
+                        return years
+                    return None
+    except Exception as exc:
+        logging.warning("Failed to read timeline disk cache for %s: %s", domain, exc)
     return None
 
 
-def save_timeline_cache(domain: str, years):
-    if not timeline_file.exists():
+def save_timeline(domain: str, years: List[str]):
+    # Ensure years are strings and joined by |
+    years_string = "|".join(str(y).strip() for y in years)
+    timeline_mem[domain] = years
+
+    if not TIMELINE_FILE.exists():
         return
-
-    years_string = "|".join(years)
-
+        
     try:
         rows = []
-        with open(timeline_file, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
+        with open(TIMELINE_FILE, "r") as f:
+            for row in csv.DictReader(f):
                 if row.get("domain") != domain:
                     rows.append(row)
+                    
         rows.append({"domain": domain, "years": years_string})
-
-        with open(timeline_file, "w", newline="") as f:
+        with open(TIMELINE_FILE, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=["domain", "years"])
             writer.writeheader()
-            for row in rows:
-                writer.writerow(row)
-    except Exception as e:
-        logging.warning("Failed to save timeline cache for %s: %s", domain, e)
+            writer.writerows(rows)
+    except Exception as exc:
+        logging.warning("Failed to save timeline cache for %s: %s", domain, exc)
 
-def get_snapshot_cache(domain: str, year: str):
-    if not snapshot_file.exists():
+
+# ---------------------------------------------------------------------------
+#  Snapshot cache
+# ---------------------------------------------------------------------------
+
+def _snapshot_key(domain: str, year: str) -> str:
+    return f"{domain}_{year}"
+
+
+def get_snapshots_from_memory(domain: str, year: str) -> list | None:
+    return snapshot_mem.get(_snapshot_key(domain, year))
+
+
+def get_snapshots_from_disk(domain: str, year: str) -> list | None:
+    if not SNAPSHOT_FILE.exists():
         return None
     snapshots = []
     try:
-        with open(snapshot_file, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row.get("domain") == domain and row.get("year") == year:
-                    timestamp = row.get("timestamp", "")
-                    if len(timestamp) >= 8:
+        from wayback import clean_domain
+        search_target = clean_domain(domain)
+        
+        with open(SNAPSHOT_FILE, "r") as f:
+            for row in csv.DictReader(f):
+                cached_domain = clean_domain(row.get("domain", ""))
+                cached_year = str(row.get("year", "")).strip()
+                
+                if cached_domain == search_target and cached_year == str(year):
+                    ts = row.get("timestamp", "").strip()
+                    if len(ts) >= 8:
                         snapshots.append({
-                            "timestamp": timestamp,
-                            "date": f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}",
-                            "url": f"https://web.archive.org/web/{timestamp}/{domain}",
+                            "timestamp": ts,
+                            "date": f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}",
+                            # Use the requested domain to build the URL fallback
+                            "url": f"https://web.archive.org/web/{ts}/{search_target}/",
                         })
-    except Exception as e:
-        logging.warning("Failed to read snapshot cache for %s/%s: %s", domain, year, e)
+    except Exception as exc:
+        logging.warning("Failed to read snapshot disk cache for %s/%s: %s", domain, year, exc)
         return None
-    if snapshots:
-        return snapshots
-    return None
+    return snapshots if snapshots else None
 
 
-def save_snapshot_cache(domain: str, year: str, snapshots):
-    if not snapshot_file.exists():
+def save_snapshots(domain: str, year: str, snapshots: list):
+    snapshot_mem[_snapshot_key(domain, year)] = snapshots
+
+    if not SNAPSHOT_FILE.exists():
         return
-
     try:
         rows = []
-        with open(snapshot_file, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
+        with open(SNAPSHOT_FILE, "r") as f:
+            for row in csv.DictReader(f):
                 if not (row.get("domain") == domain and row.get("year") == year):
                     rows.append(row)
-
         for snap in snapshots:
-            rows.append({
-                "domain": domain,
-                "year": year,
-                "timestamp": snap.get("timestamp", ""),
-            })
-
-        with open(snapshot_file, "w", newline="") as f:
+            rows.append({"domain": domain, "year": year, "timestamp": snap.get("timestamp", "")})
+        with open(SNAPSHOT_FILE, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=["domain", "year", "timestamp"])
             writer.writeheader()
-            for row in rows:
-                writer.writerow(row)
-    except Exception as e:
-        logging.warning("Failed to save snapshot cache for %s/%s: %s", domain, year, e)
+            writer.writerows(rows)
+    except Exception as exc:
+        logging.warning("Failed to save snapshot cache for %s/%s: %s", domain, year, exc)
