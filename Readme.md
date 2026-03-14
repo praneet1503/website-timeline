@@ -33,4 +33,7 @@ then your frontend will be running on http://localhost:3000 and you can open tha
 # future plans
 i dont have any but lets see where it takes us 
 
+# hackclub guys 
+**vote nicely guys cause i need to reach there for the rpi 5 somehow tbh idk why am i even asking this cause hc closed deliveries to middle east due to war situations for which i am so demotivated uk it taking on mental toll so i hope you guys vote nicely rest is your wish guys enjoy the website**
+
 <a href="demo-video.mov" target="_blank">demo video</a>
