@@ -57,10 +57,8 @@ async function fetchSnapshotsForYear(domain, year, signal) {
   if (!response.ok) {
     return [];
   }
-
   const payload = await response.json();
   const list = Array.isArray(payload.snapshots) ? payload.snapshots : [];
-
   return list.slice(0, MAX_SNAPSHOTS_PER_YEAR).map((item) => ({
     timestamp: item.timestamp,
     date: item.date,
@@ -70,36 +68,29 @@ async function fetchSnapshotsForYear(domain, year, signal) {
 
 async function collectSnapshotsByYear(domain, years, signal) {
   const snapshots = {};
-
   for (let offset = 0; offset < years.length; offset += SNAPSHOT_BATCH_SIZE) {
     const batch = years.slice(offset, offset + SNAPSHOT_BATCH_SIZE);
-
     const batchResults = await Promise.all(
       batch.map(async (year) => {
         const list = await fetchSnapshotsForYear(domain, year, signal);
         return { year, list };
       })
     );
-
     for (const result of batchResults) {
       snapshots[result.year] = result.list;
     }
   }
-
   return snapshots;
 }
 
 export async function GET(request) {
   const searchParams = request.nextUrl.searchParams;
   const domain = normalizeDomain(searchParams.get("domain"));
-
   if (!domain) {
     return NextResponse.json({ error: "domain is required" }, { status: 400 });
   }
-
   try {
     const years = await fetchTimelineYears(domain, request.signal);
-
     if (years.length === 0) {
       return NextResponse.json({
         domain,
@@ -107,15 +98,14 @@ export async function GET(request) {
         snapshots: {},
       });
     }
-
     const snapshots = await collectSnapshotsByYear(domain, years, request.signal);
-
     return NextResponse.json({
       domain,
       years,
       snapshots,
     });
-  } catch {
+  } catch (error) {
+    console.error("Error fetching timeline data:", error);
     return NextResponse.json(
       {
         domain,

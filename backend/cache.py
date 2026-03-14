@@ -77,18 +77,11 @@ def save_timeline(domain: str, years: List[str]):
     except Exception as exc:
         logging.warning("Failed to save timeline cache for %s: %s", domain, exc)
 
-
-# ---------------------------------------------------------------------------
-#  Snapshot cache
-# ---------------------------------------------------------------------------
-
 def _snapshot_key(domain: str, year: str) -> str:
     return f"{domain}_{year}"
 
-
 def get_snapshots_from_memory(domain: str, year: str) -> list | None:
     return snapshot_mem.get(_snapshot_key(domain, year))
-
 
 def get_snapshots_from_disk(domain: str, year: str) -> list | None:
     if not SNAPSHOT_FILE.exists():
@@ -97,19 +90,16 @@ def get_snapshots_from_disk(domain: str, year: str) -> list | None:
     try:
         from wayback import clean_domain
         search_target = clean_domain(domain)
-        
         with open(SNAPSHOT_FILE, "r") as f:
             for row in csv.DictReader(f):
                 cached_domain = clean_domain(row.get("domain", ""))
                 cached_year = str(row.get("year", "")).strip()
-                
                 if cached_domain == search_target and cached_year == str(year):
                     ts = row.get("timestamp", "").strip()
                     if len(ts) >= 8:
                         snapshots.append({
                             "timestamp": ts,
                             "date": f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}",
-                            # Use the requested domain to build the URL fallback
                             "url": f"https://web.archive.org/web/{ts}/{search_target}/",
                         })
     except Exception as exc:
@@ -117,10 +107,8 @@ def get_snapshots_from_disk(domain: str, year: str) -> list | None:
         return None
     return snapshots if snapshots else None
 
-
 def save_snapshots(domain: str, year: str, snapshots: list):
     snapshot_mem[_snapshot_key(domain, year)] = snapshots
-
     if not SNAPSHOT_FILE.exists():
         return
     try:

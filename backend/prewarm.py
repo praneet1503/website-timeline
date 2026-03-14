@@ -1,6 +1,5 @@
 import asyncio
 import logging
-
 from aggregator import get_timeline
 
 POPULAR_DOMAINS = [
@@ -8,8 +7,13 @@ POPULAR_DOMAINS = [
     "google.com",
     "wikipedia.org",
     "twitter.com",
+    "openai.com",
+    "facebook.com",
+    "amazon.com",
+    "reddit.com",
+    "linkedin.com",
+    "netflix.com",
 ]
-
 
 async def prewarm_popular_domains():
     logging.info("Prewarming cache for %d popular domains", len(POPULAR_DOMAINS))
@@ -20,7 +24,6 @@ async def prewarm_popular_domains():
         except Exception as exc:
             logging.warning("Prewarm failed for %s: %s", domain, exc)
     logging.info("Prewarm complete")
-
 
 if __name__ == "__main__":
     asyncio.run(prewarm_popular_domains())
